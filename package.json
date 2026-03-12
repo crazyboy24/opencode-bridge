@@ -1,0 +1,25 @@
+{
+  "name": "opencode-bridge",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible API bridge for OpenCode — use any OpenCode provider (GitHub Copilot, Anthropic, OpenAI, Ollama, OpenRouter and 75+ more) with any OpenAI-compatible client",
+  "type": "module",
+  "main": "bridge.js",
+  "scripts": {
+    "start": "node bridge.js",
+    "dev": "node --watch bridge.js"
+  },
+  "keywords": [
+    "opencode",
+    "github-copilot",
+    "openai",
+    "proxy",
+    "bridge",
+    "llm",
+    "ai"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@opencode-ai/sdk": "latest",
+    "express": "^4.18.0"
+  }
+}

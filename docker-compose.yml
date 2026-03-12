@@ -1,0 +1,15 @@
+services:
+  bridge:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - OPENCODE_URL=${OPENCODE_URL:-http://host.docker.internal:4096}
+      - OPENCODE_PROVIDER_ID=${OPENCODE_PROVIDER_ID:-github-copilot}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o}
+      - BRIDGE_API_KEY=${BRIDGE_API_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    restart: unless-stopped
+    # Lets the container reach OpenCode running on your local machine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
