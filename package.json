@@ -8,18 +8,9 @@
     "start": "node bridge.js",
     "dev": "node --watch bridge.js"
   },
-  "keywords": [
-    "opencode",
-    "github-copilot",
-    "openai",
-    "proxy",
-    "bridge",
-    "llm",
-    "ai"
-  ],
+  "keywords": ["opencode", "github-copilot", "openai", "proxy", "bridge", "llm", "ai"],
   "license": "MIT",
   "dependencies": {
-    "@opencode-ai/sdk": "latest",
     "express": "^4.18.0"
   }
 }

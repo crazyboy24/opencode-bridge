@@ -1,59 +1,71 @@
 /**
- * opencode-bridge
- * Translates OpenAI-compatible API requests → OpenCode SDK → response
+ * opencode-proxy
+ * Translates OpenAI-compatible API requests → OpenCode REST API → response
  * so any OpenAI-compatible client (OpenClaw, etc.) can use models
  * available through an OpenCode server instance (e.g. GitHub Copilot).
  *
- * https://github.com/yourusername/opencode-bridge
+ * https://github.com/crazyboy24/opencode-proxy
  */
 
 import express from "express"
-import { createOpencodeClient } from "@opencode-ai/sdk"
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const PORT         = parseInt(process.env.PORT         || "5000", 10)
-const OPENCODE_URL = process.env.OPENCODE_URL           || "http://localhost:4096"
+const OPENCODE_URL = (process.env.OPENCODE_URL         || "http://localhost:4096").replace(/\/$/, "")
 const PROVIDER_ID  = process.env.OPENCODE_PROVIDER_ID  || "github-copilot"
 const DEFAULT_MODEL= process.env.DEFAULT_MODEL         || "gpt-4o"
-const BRIDGE_KEY   = process.env.BRIDGE_API_KEY        || ""        // optional auth
-const LOG_LEVEL    = process.env.LOG_LEVEL             || "info"    // info | debug | silent
+const BRIDGE_KEY   = process.env.BRIDGE_API_KEY        || ""
+const LOG_LEVEL    = process.env.LOG_LEVEL             || "info"
 
 // ─── Logger ──────────────────────────────────────────────────────────────────
 
+const ts     = () => new Date().toISOString()
 const logger = {
   info:  (...a) => LOG_LEVEL !== "silent" && console.log(`[${ts()}] INFO `, ...a),
   debug: (...a) => LOG_LEVEL === "debug"  && console.log(`[${ts()}] DEBUG`, ...a),
   error: (...a) => LOG_LEVEL !== "silent" && console.error(`[${ts()}] ERROR`, ...a),
 }
-const ts = () => new Date().toISOString()
 
-// ─── OpenCode client ─────────────────────────────────────────────────────────
+// ─── OpenCode REST helpers ────────────────────────────────────────────────────
 
-const client = createOpencodeClient({ baseUrl: OPENCODE_URL })
+async function ocGet(path) {
+  const res = await fetch(`${OPENCODE_URL}${path}`)
+  if (!res.ok) throw new Error(`OpenCode ${path} → ${res.status}`)
+  return res.json()
+}
+
+async function ocPost(path, body) {
+  const res = await fetch(`${OPENCODE_URL}${path}`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`OpenCode ${path} → ${res.status}`)
+  return res.json()
+}
+
+async function ocDelete(path) {
+  const res = await fetch(`${OPENCODE_URL}${path}`, { method: "DELETE" })
+  return res.ok
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/**
- * Converts an array of OpenAI-format messages into a single prompt string.
- * System messages are placed first, clearly labelled.
- */
 function flattenMessages(messages) {
   return messages
     .map(m => {
-      const role = m.role.toUpperCase()
+      const role    = m.role.toUpperCase()
       const content = typeof m.content === "string"
         ? m.content
-        : m.content?.map(c => c.text ?? "").join("\n") ?? ""
+        : Array.isArray(m.content)
+          ? m.content.map(c => c.text ?? "").join("\n")
+          : ""
       return `[${role}]\n${content}`
     })
     .join("\n\n")
 }
 
-/**
- * Optional bearer-token auth middleware.
- * Only enforced when BRIDGE_API_KEY is set.
- */
 function authMiddleware(req, res, next) {
   if (!BRIDGE_KEY) return next()
   const header = req.headers["authorization"] ?? ""
@@ -71,20 +83,13 @@ app.use(express.json({ limit: "4mb" }))
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 
-/**
- * GET /health
- * Pings the downstream OpenCode server to confirm it's reachable.
- */
 app.get("/health", async (req, res) => {
-  // Always 200 — bridge process is alive.
-  // OpenCode connectivity reported in body, not in status code,
-  // so the Docker/Coolify healthcheck never fails due to upstream issues.
   try {
-    const result = await client.global.health()
+    const data = await ocGet("/global/health")
     res.json({
       status:         "ok",
       bridge_version: "1.0.0",
-      opencode:       { connected: true, ...result.data },
+      opencode:       { connected: true, ...data },
       provider:       PROVIDER_ID,
     })
   } catch (err) {
@@ -99,24 +104,17 @@ app.get("/health", async (req, res) => {
 
 // ─── Models ──────────────────────────────────────────────────────────────────
 
-/**
- * GET /v1/models
- * Fetches available models from the connected OpenCode provider and
- * returns them in OpenAI list format.
- * Falls back to a curated static list when the provider isn't reachable.
- */
 app.get("/v1/models", authMiddleware, async (req, res) => {
   try {
-    const result  = await client.provider.list()
-    const all     = result.data?.all ?? []
-    const provider = all.find(p => p.id === PROVIDER_ID)
+    const data     = await ocGet("/provider")
+    const provider = data.all?.find(p => p.id === PROVIDER_ID)
 
-    if (provider && provider.models) {
+    if (provider?.models) {
       const models = Object.keys(provider.models).map(id => ({
         id,
-        object:    "model",
-        owned_by:  PROVIDER_ID,
-        created:   0,
+        object:   "model",
+        owned_by: PROVIDER_ID,
+        created:  0,
       }))
       logger.debug(`Returning ${models.length} models from OpenCode provider`)
       return res.json({ object: "list", data: models })
@@ -127,16 +125,10 @@ app.get("/v1/models", authMiddleware, async (req, res) => {
   } catch (err) {
     logger.error("Failed to fetch models from OpenCode, using fallback:", err.message)
 
-    // Static fallback — common GitHub Copilot models
     const fallback = [
-      "gpt-4o",
-      "gpt-4.1",
-      "gpt-4.1-mini",
-      "gpt-4.1-nano",
-      "o3",
-      "o4-mini",
-      "claude-sonnet-4-5",
-      "claude-3.5-sonnet",
+      "gpt-4o", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
+      "o3", "o4-mini",
+      "claude-sonnet-4-5", "claude-3.5-sonnet",
       "gemini-2.0-flash-001",
     ].map(id => ({ id, object: "model", owned_by: PROVIDER_ID, created: 0 }))
 
@@ -146,16 +138,10 @@ app.get("/v1/models", authMiddleware, async (req, res) => {
 
 // ─── Chat completions ────────────────────────────────────────────────────────
 
-/**
- * POST /v1/chat/completions
- * Main endpoint. Creates a temporary OpenCode session, sends the prompt,
- * waits for the response, cleans up, and returns OpenAI-shaped JSON.
- */
 app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
   const reqId = `req_${Date.now()}`
-  const { messages, model, user } = req.body
+  const { messages, model } = req.body
 
-  // ── Validation ──────────────────────────────────────────────────────────
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({
       error: { message: "`messages` must be a non-empty array", type: "invalid_request_error" }
@@ -169,40 +155,29 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
   const startMs = Date.now()
 
   try {
-    // ── 1. Create a fresh session ──────────────────────────────────────────
-    const sessionRes = await client.session.create({
-      body: { title: `bridge-${reqId}` }
-    })
-    sessionId = sessionRes.data.id
+    // 1. Create session
+    const session = await ocPost("/session", { title: `bridge-${reqId}` })
+    sessionId = session.id
     logger.debug(`[${reqId}] session created: ${sessionId}`)
 
-    // ── 2. Build prompt ────────────────────────────────────────────────────
-    const promptText = flattenMessages(messages)
-
-    // ── 3. Send to OpenCode ────────────────────────────────────────────────
-    const result = await client.session.prompt({
-      path: { id: sessionId },
-      body: {
-        model: { providerID: PROVIDER_ID, modelID },
-        parts: [{ type: "text", text: promptText }],
-      },
+    // 2. Send prompt
+    const result = await ocPost(`/session/${sessionId}/message`, {
+      model: { providerID: PROVIDER_ID, modelID },
+      parts: [{ type: "text", text: flattenMessages(messages) }],
     })
 
-    // ── 4. Extract text response ───────────────────────────────────────────
-    const parts        = result.data?.parts ?? []
+    // 3. Extract response
+    const parts        = result.parts ?? []
     const textPart     = parts.find(p => p.type === "text")
     const responseText = textPart?.text ?? ""
 
-    // ── 5. Token estimates (best-effort from OpenCode if available) ────────
-    const msgInfo  = result.data?.info ?? {}
     const usage = {
-      prompt_tokens:     msgInfo?.tokens?.input      ?? 0,
-      completion_tokens: msgInfo?.tokens?.output     ?? 0,
-      total_tokens:      msgInfo?.tokens?.total      ?? 0,
+      prompt_tokens:     result.info?.tokens?.input  ?? 0,
+      completion_tokens: result.info?.tokens?.output ?? 0,
+      total_tokens:      result.info?.tokens?.total  ?? 0,
     }
 
-    const elapsed = Date.now() - startMs
-    logger.info(`[${reqId}] ✓ ${elapsed}ms tokens=${usage.total_tokens}`)
+    logger.info(`[${reqId}] ✓ ${Date.now() - startMs}ms tokens=${usage.total_tokens}`)
 
     return res.json({
       id:      `chatcmpl-${sessionId}`,
@@ -218,32 +193,18 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
     })
 
   } catch (err) {
-    const elapsed = Date.now() - startMs
-    logger.error(`[${reqId}] ✗ ${elapsed}ms`, err.message)
-
-    const isUpstream = err.message?.toLowerCase().includes("connect")
-    return res.status(502).json({
-      error: {
-        message: isUpstream
-          ? `Cannot reach OpenCode server at ${OPENCODE_URL}`
-          : err.message,
-        type:    "bridge_error",
-        code:    isUpstream ? "upstream_unavailable" : "internal_error",
-      }
-    })
+    logger.error(`[${reqId}] ✗ ${Date.now() - startMs}ms`, err.message)
+    return res.status(502).json({ error: { message: err.message, type: "bridge_error" } })
 
   } finally {
-    // ── 6. Always clean up the session ─────────────────────────────────────
-    if (sessionId) {
-      client.session.delete({ path: { id: sessionId } }).catch(() => {})
-    }
+    if (sessionId) ocDelete(`/session/${sessionId}`).catch(() => {})
   }
 })
 
-// ─── 404 catch-all ───────────────────────────────────────────────────────────
+// ─── 404 ─────────────────────────────────────────────────────────────────────
 
 app.use((req, res) => {
-  res.status(404).json({ error: { message: `Route ${req.method} ${req.path} not found`, type: "not_found" } })
+  res.status(404).json({ error: { message: `Route ${req.method} ${req.path} not found` } })
 })
 
 // ─── Start ───────────────────────────────────────────────────────────────────
@@ -255,10 +216,9 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   logger.info(`  Provider  : ${PROVIDER_ID}`)
   logger.info(`  Auth      : ${BRIDGE_KEY ? "enabled" : "disabled (set BRIDGE_API_KEY to enable)"}`)
 
-  // Warm-up ping
   try {
-    const h = await client.global.health()
-    logger.info(`  OpenCode health: ✓ v${h.data?.version ?? "unknown"}`)
+    const h = await ocGet("/global/health")
+    logger.info(`  OpenCode health: ✓ v${h.version ?? "unknown"}`)
   } catch {
     logger.error(`  OpenCode health: ✗ not reachable — check OPENCODE_URL`)
   }
@@ -267,11 +227,8 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
 // ─── Graceful shutdown ───────────────────────────────────────────────────────
 
 const shutdown = (signal) => {
-  logger.info(`${signal} received, shutting down gracefully…`)
-  server.close(() => {
-    logger.info("Server closed")
-    process.exit(0)
-  })
+  logger.info(`${signal} received, shutting down…`)
+  server.close(() => { logger.info("Server closed"); process.exit(0) })
   setTimeout(() => process.exit(1), 5000)
 }
 
