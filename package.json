@@ -1,5 +1,5 @@
 {
-  "name": "opencode-proxy",
+  "name": "opencode-bridge",
   "version": "1.0.0",
   "description": "OpenAI-compatible API bridge for OpenCode — use any OpenCode provider (GitHub Copilot, Anthropic, OpenAI, Ollama, OpenRouter and 75+ more) with any OpenAI-compatible client",
   "type": "module",
