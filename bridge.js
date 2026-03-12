@@ -196,8 +196,11 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
 
     // 3. Extract response
     const parts        = result.parts ?? []
+    logger.debug(`[${reqId}] result keys: ${Object.keys(result).join(", ")}`)
+    logger.debug(`[${reqId}] parts: ${JSON.stringify(parts.map(p => ({ type: p.type, len: p.text?.length ?? 0 })))}`)
     const textPart     = parts.find(p => p.type === "text")
     const responseText = textPart?.text ?? ""
+    logger.debug(`[${reqId}] responseText length: ${responseText.length}`)
 
     const usage = {
       prompt_tokens:     result.info?.tokens?.input  ?? 0,
