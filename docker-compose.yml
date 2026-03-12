@@ -1,5 +1,5 @@
 services:
-  opencode-proxy:
+  opencode-bridge:
     build: .
     ports:
       - "5000:5000"
@@ -7,7 +7,7 @@ services:
       - OPENCODE_URL=${OPENCODE_URL:-http://opencode:4096}
       - OPENCODE_PROVIDER_ID=${OPENCODE_PROVIDER_ID:-github-copilot}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o}
-      - OPENCODE_PROXY_API_KEY=${OPENCODE_PROXY_API_KEY:-}
+      - OPENCODE_BRIDGE_API_KEY=${OPENCODE_BRIDGE_API_KEY:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     restart: unless-stopped
     networks:
