@@ -15,8 +15,9 @@ const PORT         = parseInt(process.env.PORT         || "5000", 10)
 const OPENCODE_URL = (process.env.OPENCODE_URL         || "http://localhost:4096").replace(/\/$/, "")
 const PROVIDER_ID  = process.env.OPENCODE_PROVIDER_ID  || "github-copilot"
 const DEFAULT_MODEL= process.env.DEFAULT_MODEL         || "gpt-4o"
-const BRIDGE_KEY   = process.env.BRIDGE_API_KEY        || ""
+const BRIDGE_KEY   = process.env.OPENCODE_PROXY_API_KEY        || ""
 const LOG_LEVEL    = process.env.LOG_LEVEL             || "info"
+const TIMEOUT_MS   = parseInt(process.env.TIMEOUT_MS       || "120000", 10)
 
 // ─── Logger ──────────────────────────────────────────────────────────────────
 
@@ -29,18 +30,27 @@ const logger = {
 
 // ─── OpenCode REST helpers ────────────────────────────────────────────────────
 
+function withTimeout(ms) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), ms)
+  return { signal: controller.signal, clear: () => clearTimeout(timer) }
+}
+
 async function ocGet(path) {
-  const res = await fetch(`${OPENCODE_URL}${path}`)
+  const { signal, clear } = withTimeout(TIMEOUT_MS)
+  const res = await fetch(`${OPENCODE_URL}${path}`, { signal }).finally(clear)
   if (!res.ok) throw new Error(`OpenCode ${path} → ${res.status}`)
   return res.json()
 }
 
 async function ocPost(path, body) {
+  const { signal, clear } = withTimeout(TIMEOUT_MS)
   const res = await fetch(`${OPENCODE_URL}${path}`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify(body),
-  })
+    signal,
+  }).finally(clear)
   if (!res.ok) throw new Error(`OpenCode ${path} → ${res.status}`)
   return res.json()
 }
@@ -214,7 +224,8 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   logger.info(`  Listening : http://0.0.0.0:${PORT}`)
   logger.info(`  OpenCode  : ${OPENCODE_URL}`)
   logger.info(`  Provider  : ${PROVIDER_ID}`)
-  logger.info(`  Auth      : ${BRIDGE_KEY ? "enabled" : "disabled (set BRIDGE_API_KEY to enable)"}`)
+  logger.info(`  Auth      : ${BRIDGE_KEY ? "enabled" : "disabled (set OPENCODE_PROXY_API_KEY to enable)"}`)
+  logger.info(`  Timeout   : ${TIMEOUT_MS}ms`)
 
   try {
     const h = await ocGet("/global/health")
