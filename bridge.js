@@ -169,7 +169,6 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
 
     // 3. Extract response text
     const parts        = result.parts ?? []
-    logger.debug(`[${reqId}] parts: ${JSON.stringify(parts.map(p => ({ type: p.type, len: p.text?.length ?? 0 })))}`)
     const textPart     = parts.find(p => p.type === "text")
     const responseText = textPart?.text ?? ""
 
