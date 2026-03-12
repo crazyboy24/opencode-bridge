@@ -76,19 +76,23 @@ app.use(express.json({ limit: "4mb" }))
  * Pings the downstream OpenCode server to confirm it's reachable.
  */
 app.get("/health", async (req, res) => {
+  // Always 200 — bridge process is alive.
+  // OpenCode connectivity reported in body, not in status code,
+  // so the Docker/Coolify healthcheck never fails due to upstream issues.
   try {
     const result = await client.global.health()
     res.json({
       status:         "ok",
       bridge_version: "1.0.0",
-      opencode:       result.data,
+      opencode:       { connected: true, ...result.data },
       provider:       PROVIDER_ID,
     })
   } catch (err) {
-    res.status(503).json({
-      status:  "degraded",
-      error:   err.message,
-      detail:  `Cannot reach OpenCode at ${OPENCODE_URL}`,
+    res.json({
+      status:         "ok",
+      bridge_version: "1.0.0",
+      opencode:       { connected: false, error: err.message },
+      provider:       PROVIDER_ID,
     })
   }
 })
