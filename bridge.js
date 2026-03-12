@@ -3,7 +3,7 @@
  * Translates OpenAI-compatible API requests → OpenCode REST API → response
  * Supports both streaming (SSE) and non-streaming responses.
  *
- * https://github.com/crazyboy24/opencode-proxy
+ * https://github.com/crazyboy24/opencode-bridge
  */
 
 import express from "express"
