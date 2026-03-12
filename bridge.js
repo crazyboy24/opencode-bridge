@@ -9,7 +9,7 @@
 
 import express from "express"
 import fs      from "fs"
-import path    from "path"
+import nodePath from "path"
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -34,7 +34,7 @@ const ts = () => new Date().toISOString()
 
 let logStream = null
 if (LOG_FILE) {
-  const dir = path.dirname(LOG_FILE)
+  const dir = nodePath.dirname(LOG_FILE)
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   logStream = fs.createWriteStream(LOG_FILE, { flags: "a" })
 }
@@ -64,8 +64,8 @@ function baseHeaders() {
   return h
 }
 
-async function ocGet(path) {
-  const { signal, clear } = withTimeout(TIMEOUT_MS)
+async function ocGet(path, timeoutMs = TIMEOUT_MS) {
+  const { signal, clear } = withTimeout(timeoutMs)
   const res = await fetch(`${OPENCODE_URL}${path}`, {
     headers: baseHeaders(),
     signal,
@@ -275,7 +275,7 @@ app.use(express.json({ limit: "50mb" }))     // large enough for image payloads
 
 app.get("/health", async (req, res) => {
   try {
-    const data = await ocGet("/global/health")
+    const data = await ocGet("/global/health", 10000)
     res.json({ status: "ok", bridge_version: "1.1.0", opencode: { connected: true, ...data }, provider: PROVIDER_ID })
   } catch (err) {
     res.json({ status: "ok", bridge_version: "1.1.0", opencode: { connected: false, error: err.message }, provider: PROVIDER_ID })
@@ -398,7 +398,7 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
 
     const message = {
       role:    "assistant",
-      content: responseText || null,
+      content: toolCalls ? (responseText || null) : (responseText ?? ""),
       ...(toolCalls ? { tool_calls: toolCalls } : {}),
     }
 
@@ -483,7 +483,7 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   logger.info(`  Log file   : ${LOG_FILE || "stdout only"}`)
 
   try {
-    const h = await ocGet("/global/health")
+    const h = await ocGet("/global/health", 10000)
     logger.info(`  OpenCode health: ✓ v${h.version ?? "unknown"}`)
   } catch {
     logger.error(`  OpenCode health: ✗ not reachable — check OPENCODE_URL`)
