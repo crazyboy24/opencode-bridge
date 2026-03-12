@@ -28,6 +28,20 @@ const RETRY_DELAY   = parseInt(process.env.RETRY_DELAY_MS       || "2000",     1
 const SESSION_TTL_H = parseInt(process.env.SESSION_TTL_HOURS    || "2",        10)
 const CLEANUP_EVERY = parseInt(process.env.CLEANUP_INTERVAL_MS  || "3600000",  10) // 1hr
 
+// ─── Session map (conversation → OpenCode session) ──────────────────────────
+// Keyed by x-conversation-id header or a hash of the first user message.
+// Allows the same OpenCode session to be reused across a multi-turn conversation,
+// giving OpenCode full context of files opened, edits made, bash history, etc.
+const sessionMap = new Map() // conversationId → { sessionId, lastUsed }
+const SESSION_MAP_TTL = SESSION_TTL_H * 60 * 60 * 1000
+
+function pruneSessionMap() {
+  const cutoff = Date.now() - SESSION_MAP_TTL
+  for (const [k, v] of sessionMap.entries()) {
+    if (v.lastUsed < cutoff) sessionMap.delete(k)
+  }
+}
+
 // ─── Logger ──────────────────────────────────────────────────────────────────
 
 const ts = () => new Date().toISOString()
@@ -282,9 +296,9 @@ app.use(express.json({ limit: "50mb" }))     // large enough for image payloads
 app.get("/health", async (req, res) => {
   try {
     const data = await ocGet("/global/health", 10000)
-    res.json({ status: "ok", bridge_version: "1.1.0", opencode: { connected: true, ...data }, provider: PROVIDER_ID })
+    res.json({ status: "ok", bridge_version: "1.2.0", opencode: { connected: true, ...data }, provider: PROVIDER_ID, active_sessions: sessionMap.size })
   } catch (err) {
-    res.json({ status: "ok", bridge_version: "1.1.0", opencode: { connected: false, error: err.message }, provider: PROVIDER_ID })
+    res.json({ status: "ok", bridge_version: "1.2.0", opencode: { connected: false, error: err.message }, provider: PROVIDER_ID, active_sessions: sessionMap.size })
   }
 })
 
@@ -344,14 +358,45 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
 
   const startMs = Date.now()
 
-  try {
-    // 1. Create session (with retry)
-    const session   = await withRetry(() => ocPost("/session", { title: `bridge-${reqId}` }))
-    const sessionId = session.id
-    logger.debug(`[${reqId}] session created: ${sessionId}`)
+  // Derive a conversation ID from the request:
+  // 1. x-conversation-id header (OpenClaw or any client that sends it)
+  // 2. Fallback: hash of the first user message content (stable per conversation start)
+  const convId = req.headers["x-conversation-id"]
+    ?? req.headers["x-session-id"]
+    ?? (() => {
+         const first = messages.find(m => m.role === "user")
+         const text  = typeof first?.content === "string" ? first.content : JSON.stringify(first?.content)
+         let h = 0
+         for (const c of (text ?? "")) { h = (Math.imul(31, h) + c.charCodeAt(0)) | 0 }
+         return `hash_${Math.abs(h)}`
+       })()
 
-    // 2. Build parts
-    const { parts: msgParts, hasImg } = buildParts(messages, tools)
+  try {
+    // 1. Get or create OpenCode session for this conversation
+    pruneSessionMap()
+    let sessionId
+    const existing = sessionMap.get(convId)
+    // x-working-directory lets the client tell OpenCode which project to work in
+    const workDir = req.headers["x-working-directory"] ?? null
+
+    if (existing) {
+      sessionId = existing.sessionId
+      existing.lastUsed = Date.now()
+      logger.debug(`[${reqId}] reusing session ${sessionId} for conv ${convId}`)
+    } else {
+      const sessionBody = { title: `bridge-${reqId}` }
+      if (workDir) sessionBody.directory = workDir
+      const session = await withRetry(() => ocPost("/session", sessionBody))
+      sessionId = session.id
+      sessionMap.set(convId, { sessionId, lastUsed: Date.now() })
+      logger.debug(`[${reqId}] new session ${sessionId} for conv ${convId}${workDir ? ` dir=${workDir}` : ""}`)
+    }
+
+    // 2. Build parts — when reusing a session, send only the latest user message
+    //    since OpenCode already has prior context in its session history.
+    //    For new sessions, send full history for context bootstrapping.
+    const msgsToSend = existing ? [messages[messages.length - 1]] : messages
+    const { parts: msgParts, hasImg } = buildParts(msgsToSend, tools)
     if (hasImg) logger.info(`[${reqId}] multimodal — images detected`)
 
     // 3. Start SSE heartbeat before the slow OpenCode call
@@ -375,12 +420,28 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
       if (heartbeat) clearInterval(heartbeat)
     }
 
-    // 5. Extract response
-    const resParts     = result.parts ?? []
-    const textPart     = resParts.find(p => p.type === "text")
-    const responseText = textPart?.text ?? ""
+    // 5. Extract response — join ALL text parts in order (OpenCode may produce
+    //    multiple text parts across tool-use steps)
+    const resParts  = result.parts ?? []
 
-    // Extract tool calls if present
+    // Collect text segments in document order, skipping step markers
+    const textSegments  = resParts
+      .filter(p => p.type === "text" && p.text)
+      .map(p => p.text.trim())
+      .filter(Boolean)
+    const responseText  = textSegments.join("\n\n")
+
+    // Collect OpenCode's own tool results (bash output, file reads, etc.)
+    // and append as a structured block so the agent can see what happened
+    const ocToolResults = resParts.filter(p => p.type === "tool-result")
+    const toolResultBlock = ocToolResults.length
+      ? "\n\n---\n**Tool outputs:**\n" + ocToolResults
+          .map(r => `**${r.toolName ?? "tool"}:** ${typeof r.result === "string" ? r.result : JSON.stringify(r.result)}`)
+          .join("\n")
+      : ""
+    const fullResponseText = responseText + toolResultBlock
+
+    // Extract OpenAI-style tool calls from OpenCode response (if model called client tools)
     const toolCallParts = resParts.filter(p => p.type === "tool-call")
     const toolCalls     = toolCallParts.length
       ? toolCallParts.map((tc, i) => ({
@@ -397,14 +458,14 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
     }
 
     const finishReason = toolCalls?.length ? "tool_calls" : "stop"
-    logger.info(`[${reqId}] ✓ ${Date.now() - startMs}ms tokens=${usage.total_tokens} chars=${responseText.length} finish=${finishReason}`)
+    logger.info(`[${reqId}] ✓ ${Date.now() - startMs}ms tokens=${usage.total_tokens} chars=${fullResponseText.length} steps=${textSegments.length} finish=${finishReason}`)
 
     const cmplId  = `chatcmpl-${sessionId}`
     const created = Math.floor(Date.now() / 1000)
 
     const message = {
       role:    "assistant",
-      content: toolCalls ? (responseText || null) : (responseText ?? ""),
+      content: toolCalls ? (fullResponseText || null) : (fullResponseText ?? ""),
       ...(toolCalls ? { tool_calls: toolCalls } : {}),
     }
 
@@ -425,7 +486,7 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
       } else {
         res.write(`data: ${JSON.stringify({
           id: cmplId, object: "chat.completion.chunk", created, model: modelID,
-          choices: [{ index: 0, delta: { content: responseText }, finish_reason: null }],
+          choices: [{ index: 0, delta: { content: fullResponseText }, finish_reason: null }],
         })}\n\n`)
       }
 
@@ -448,6 +509,8 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
 
   } catch (err) {
     logger.error(`[${reqId}] ✗ ${Date.now() - startMs}ms ${err.message}`)
+    // Remove from session map so next request starts a fresh session
+    sessionMap.delete(convId)
 
     if (stream) {
       if (!res.headersSent) {
@@ -476,7 +539,7 @@ app.use((req, res) => {
 // ─── Start ───────────────────────────────────────────────────────────────────
 
 const server = app.listen(PORT, "0.0.0.0", async () => {
-  logger.info(`opencode-bridge v1.1.0 started`)
+  logger.info(`opencode-bridge v1.2.0 started`)
   logger.info(`  Listening  : http://0.0.0.0:${PORT}`)
   logger.info(`  OpenCode   : ${OPENCODE_URL}`)
   logger.info(`  Provider   : ${PROVIDER_ID}`)
@@ -487,6 +550,7 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   logger.info(`  Retries    : ${RETRY_COUNT} × ${RETRY_DELAY}ms delay`)
   logger.info(`  Sessions   : cleanup every ${CLEANUP_EVERY / 60000}min, TTL ${SESSION_TTL_H}h`)
   logger.info(`  Log file   : ${LOG_FILE || "stdout only"}`)
+  logger.info(`  Session map: persistent sessions per conversation (TTL ${SESSION_TTL_H}h)`)
 
   try {
     const h = await ocGet("/global/health", 10000)
