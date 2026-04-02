@@ -14,7 +14,7 @@ const PORT         = parseInt(process.env.PORT                || "5000",   10)
 const OPENCODE_URL = (process.env.OPENCODE_URL                || "http://localhost:4096").replace(/\/$/, "")
 const PROVIDER_ID  = process.env.OPENCODE_PROVIDER_ID         || "github-copilot"
 const DEFAULT_MODEL= process.env.DEFAULT_MODEL                || "gpt-4o"
-const BRIDGE_KEY   = process.env.OPENCODE_BRIDGE_API_KEY       || ""
+const OPENCODE_BRIDGE_API_KEY   = process.env.OPENCODE_BRIDGE_API_KEY       || ""
 const LOG_LEVEL    = process.env.LOG_LEVEL                    || "info"
 const TIMEOUT_MS      = parseInt(process.env.TIMEOUT_MS       || "600000", 10) // 10 min default
 const HEARTBEAT_MS    = parseInt(process.env.HEARTBEAT_MS    || "15000",  10) // SSE comment every 15s to keep connection alive
@@ -107,10 +107,10 @@ function buildParts(messages) {
 }
 
 function authMiddleware(req, res, next) {
-  if (!BRIDGE_KEY) return next()
+  if (!OPENCODE_BRIDGE_API_KEY) return next()
   const header = req.headers["authorization"] ?? ""
   const token  = header.startsWith("Bearer ") ? header.slice(7) : header
-  if (token !== BRIDGE_KEY) {
+  if (token !== OPENCODE_BRIDGE_API_KEY) {
     return res.status(401).json({ error: { message: "Unauthorized", type: "auth_error" } })
   }
   next()
@@ -303,7 +303,7 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   logger.info(`  Provider  : ${PROVIDER_ID}`)
   logger.info(`  Timeout   : ${TIMEOUT_MS}ms`)
   logger.info(`  Heartbeat : ${HEARTBEAT_MS}ms (SSE keep-alive)`)
-  logger.info(`  Auth      : ${BRIDGE_KEY ? "enabled" : "disabled (set OPENCODE_BRIDGE_API_KEY to enable)"}`)
+  logger.info(`  Auth      : ${OPENCODE_BRIDGE_API_KEY ? "enabled" : "disabled (set OPENCODE_BRIDGE_API_KEY to enable)"}`)
 
   try {
     const h = await ocGet("/global/health")
