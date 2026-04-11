@@ -5,8 +5,7 @@ WORKDIR /app
 COPY package.json .
 RUN npm install --omit=dev
 
-RUN apt-get update
-RUN apt-get install -y curl
+RUN npm install curl
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:22-alpine AS runtime
