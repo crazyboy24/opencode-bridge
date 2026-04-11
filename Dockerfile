@@ -15,13 +15,10 @@ RUN addgroup -S bridge && adduser -S bridge -G bridge
 
 RUN apt-get update && apt-get install -y \
     curl \
-    ca-certificates \
     git \
-    openssh-client \
     sudo \
     wget \
     bash \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY bridge.js .
