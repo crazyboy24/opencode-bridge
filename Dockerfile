@@ -13,13 +13,10 @@ WORKDIR /app
 # Non-root user for security
 RUN addgroup -S bridge && adduser -S bridge -G bridge
 
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    sudo \
-    wget \
-    bash \
+RUN apt-get update
 
+RUN apt-get install -y curl
+    
 COPY --from=deps /app/node_modules ./node_modules
 COPY bridge.js .
 COPY package.json .
