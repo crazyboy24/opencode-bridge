@@ -5,6 +5,9 @@ WORKDIR /app
 COPY package.json .
 RUN npm install --omit=dev
 
+RUN apt-get update
+RUN apt-get install -y curl
+
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:22-alpine AS runtime
 
@@ -12,10 +15,6 @@ WORKDIR /app
 
 # Non-root user for security
 RUN addgroup -S bridge && adduser -S bridge -G bridge
-
-RUN apt-get update
-
-RUN apt-get install -y curl
     
 COPY --from=deps /app/node_modules ./node_modules
 COPY bridge.js .
